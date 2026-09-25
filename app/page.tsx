@@ -1,120 +1,59 @@
-"use client";
+'use client';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { browserDb } from '../lib/supabase';
+import { type Prospect, type Snapshot, type Stage, stages, webUrl } from '../lib/domain';
 
-import { useMemo, useState } from "react";
-
-type Prospect = {
-  company: string;
-  city: string;
-  sector: string;
-  employees: string;
-  score: number;
-  source: string;
-  status: string;
-};
-
-const seed: Prospect[] = [
-  { company: "Transportadora Vale Sul", city: "Joinville/SC", sector: "Logística", employees: "51–200", score: 92, source: "Google Maps", status: "Novo" },
-  { company: "Grupo Industrial Norte", city: "Joinville/SC", sector: "Indústria", employees: "201–500", score: 88, source: "Google Maps", status: "Novo" },
-  { company: "Construtora Horizonte", city: "Araquari/SC", sector: "Construção", employees: "51–200", score: 81, source: "LinkedIn", status: "Novo" },
-  { company: "Serviços Médicos Prime", city: "Joinville/SC", sector: "Saúde", employees: "11–50", score: 74, source: "Google Maps", status: "Novo" }
-];
+const empty: Snapshot = { campaigns:[],prospects:[],runs:[],limited:false,maps_ready:false };
+const labels = { today:'Visão geral',campaigns:'Campanhas',prospects:'Prospects',pipeline:'Acompanhamento',settings:'Configurações' };
+type Tab = keyof typeof labels;
+const example = '[{"title":"Empresa Exemplo (fictícia)","placeId":"demo-001","city":"Joinville","categoryName":"Serviços","website":"https://example.com"}]';
+type History = {events:Array<{id:string;kind:string;created_at:string;detail:Record<string,unknown>}>;raw:unknown[]};
 
 export default function Home() {
-  const [query, setQuery] = useState("empresas em Joinville com potencial para 2+ veículos");
-  const [running, setRunning] = useState(false);
-  const [prospects, setProspects] = useState(seed);
-  const [filter, setFilter] = useState("Todos");
-
-  const filtered = useMemo(
-    () => prospects.filter((p) => filter === "Todos" || p.status === filter),
-    [prospects, filter]
-  );
-
-  function createCampaign() {
-    setRunning(true);
-    window.setTimeout(() => {
-      setProspects((current) => [...current, {
-        company: "Nova campanha — exemplo",
-        city: "São José/SC",
-        sector: "Serviços",
-        employees: "51–200",
-        score: 79,
-        source: "Google Maps",
-        status: "Novo"
-      }]);
-      setRunning(false);
-    }, 700);
-  }
-
-  return (
-    <main className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brandMark">S</div>
-          <div><strong>Sign&Drive</strong><span>Prospecção B2B</span></div>
-        </div>
-        <nav>
-          <button className="navItem active">Hoje</button>
-          <button className="navItem">Campanhas</button>
-          <button className="navItem">Prospects</button>
-          <button className="navItem">Pipeline</button>
-          <button className="navItem">Configurações</button>
-        </nav>
-        <div className="sideFoot">Thema Assinaturas</div>
-      </aside>
-
-      <section className="content">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">CENTRAL DE PROSPECÇÃO</p>
-            <h1>O que vamos prospectar hoje?</h1>
-          </div>
-          <div className="statusPill"><span /> MVP</div>
-        </header>
-
-        <section className="heroCard">
-          <textarea value={query} onChange={(e) => setQuery(e.target.value)} />
-          <div className="actionRow">
-            <div className="chips">
-              <span className="chip">Google Maps</span>
-              <span className="chip">LinkedIn</span>
-              <span className="chip">Brasil</span>
-            </div>
-            <button className="primary" onClick={createCampaign} disabled={running}>
-              {running ? "Preparando..." : "Criar campanha"}
-            </button>
-          </div>
-        </section>
-
-        <section className="stats">
-          <div><span>Prospects</span><strong>{prospects.length}</strong></div>
-          <div><span>Qualificados</span><strong>{prospects.filter(p => p.score >= 80).length}</strong></div>
-          <div><span>Score médio</span><strong>{Math.round(prospects.reduce((a,b) => a+b.score, 0)/prospects.length)}</strong></div>
-          <div><span>Campanha</span><strong>{running ? "Em execução" : "Pronta"}</strong></div>
-        </section>
-
-        <section className="panel">
-          <div className="panelHead">
-            <div><p className="eyebrow">FILA DE PROSPECTS</p><h2>Contas para trabalhar</h2></div>
-            <select value={filter} onChange={(e) => setFilter(e.target.value)}>
-              <option>Todos</option>
-              <option>Novo</option>
-              <option>Contato</option>
-              <option>Oportunidade</option>
-            </select>
-          </div>
-          <div className="table">
-            {filtered.map((p, i) => (
-              <article className="prospect" key={i}>
-                <div className="company"><strong>{p.company}</strong><span>{p.sector} · {p.city}</span></div>
-                <div className="meta"><span>{p.employees}</span><span>{p.source}</span></div>
-                <div className={"score " + (p.score >= 85 ? "high" : "")}>{p.score}</div>
-                <button className="contact" onClick={() => setProspects(ps => ps.map((x,idx)=>idx===i?{...x,status:"Contato"}:x))}>Trabalhar</button>
-              </article>
-            ))}
-          </div>
-        </section>
-      </section>
-    </main>
-  );
+  const [db] = useState(browserDb);
+  const [ready,setReady] = useState(false),[signedIn,setSignedIn] = useState(false),[email,setEmail] = useState('');
+  const [tab,setTab] = useState<Tab>('today'),[data,setData] = useState<Snapshot>(empty);
+  const [message,setMessage] = useState(''),[error,setError] = useState(''),[busy,setBusy] = useState(false);
+  const [campaignId,setCampaignId] = useState(''),[search,setSearch] = useState(''),[filter,setFilter] = useState('Todas');
+  const [modal,setModal] = useState<'campaign'|'import'|null>(null),[selected,setSelected] = useState<Prospect|null>(null);
+  const [history,setHistory] = useState<History>({events:[],raw:[]}),[kind,setKind] = useState('note');
+  const [importText,setImportText] = useState('');
+  const requestKey = useRef('');
+  const api = useCallback(async (path:string,payload?:unknown) => {
+    const session = await db?.auth.getSession();
+    if (!session?.data.session) throw new Error('Entre para continuar.');
+    const response = await fetch(`/api/${path}`, { method:payload?'POST':'GET',headers:{Authorization:`Bearer ${session.data.session.access_token}`,'Content-Type':'application/json'},...(payload?{body:JSON.stringify(payload)}:{}) });
+    const value=await response.json(); if (!response.ok) throw new Error(value.error || 'Não foi possível concluir.'); return value;
+  },[db]);
+  const refresh=useCallback(async()=>{setData(await api('state'));},[api]);
+  useEffect(()=>{
+    if (!db) {setReady(true);return;}
+    db.auth.getSession().then(({data})=>{setSignedIn(!!data.session);setReady(true);});
+    const {data:listener}=db.auth.onAuthStateChange((_event,session)=>{setSignedIn(!!session);if(!session){setData(empty);setSelected(null);}});
+    return()=>listener.subscription.unsubscribe();
+  },[db]);
+  useEffect(()=>{if(signedIn)refresh().catch(e=>setError(e.message));},[signedIn,refresh]);
+  useEffect(()=>{
+    if (!selected) return;
+    let active=true;setHistory({events:[],raw:[]});
+    api(`prospects?id=${selected.id}`).then(v=>{if(active)setHistory(v);}).catch(e=>{if(active)setError(e.message);});
+    return()=>{active=false;};
+  },[selected,api]);
+  const act=async(fn:()=>Promise<void>)=>{setBusy(true);setError('');setMessage('');try{await fn();}catch(e){setError(e instanceof Error?e.message:'Erro inesperado.');}finally{setBusy(false);}};
+  const open=(type:'campaign'|'import')=>{requestKey.current=crypto.randomUUID();setModal(type);setImportText('');setError('');};
+  const view=(p:Prospect)=>{requestKey.current=crypto.randomUUID();setSelected(p);setKind('note');setError('');};
+  const prospects=data.prospects.filter(p=>(!campaignId||p.campaign_ids.includes(campaignId))&&(!search||`${p.name} ${p.city??''} ${p.sector??''}`.toLowerCase().includes(search.toLowerCase()))&&(filter==='Todas'||p.qualification===filter));
+  const notices=<>{error&&<div className="notice error" role="alert">{error}<button aria-label="Fechar erro" onClick={()=>setError('')}>×</button></div>}{message&&<div className="notice success" role="status">{message}</div>}</>;
+  if(!ready)return <main className="login"><p>Preparando seu espaço…</p></main>;
+  if(!signedIn)return <main className="login"><section className="loginBrand"><div className="wordmark">thema<span>assinaturas</span></div><div><p className="eyebrow light">SIGN&DRIVE · PROSPECÇÃO B2B</p><h1>Boas conexões.<br/>Novas possibilidades.</h1><p>Encontre empresas, organize evidências e acompanhe cada próximo passo.</p></div><small>Uma operação mais clara, do primeiro sinal à conversa.</small></section><section className="loginForm"><div className="loginBox"><span className="miniLogo">S&amp;D</span><p className="eyebrow">SEU ESPAÇO DE TRABALHO</p><h2>Vamos começar?</h2><p className="muted">Entre com seu e-mail autorizado.</p>{notices}{!db?<div className="notice">Ambiente em preparação. A conexão com o banco ainda não foi configurada.</div>:<form onSubmit={e=>{e.preventDefault();act(async()=>{const res=await db.auth.signInWithOtp({email,options:{shouldCreateUser:true,emailRedirectTo:window.location.origin}});if(res.error)throw res.error;setMessage('Link enviado. Abra seu e-mail para entrar. Novos acessos dependem de autorização da administração.');});}}><label>E-mail<input type="email" autoComplete="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="voce@empresa.com.br"/></label><button className="primary full" disabled={busy}>{busy?'Enviando…':'Receber link de acesso →'}</button></form>}<div className="loginNote">Acesso restrito à equipe. Os dados de cada usuário ficam em seu próprio espaço.</div></div></section></main>;
+  return <div className="shell"><aside className="sidebar"><a className="brand" href="/"><span className="brandMark">S&amp;D</span><span><strong>Sign&amp;Drive</strong><small>THEMA ASSINATURAS</small></span></a><div className="navLabel">ESPAÇO DE TRABALHO</div><nav>{(Object.keys(labels) as Tab[]).map((key,i)=><button key={key} className={`navItem ${tab===key?'active':''}`} onClick={()=>setTab(key)}><span className="icon" aria-hidden="true">{['◫','◎','▤','▥','⚙'][i]}</span>{labels[key]}{key==='prospects'&&<span className="navCount">{data.prospects.length}</span>}</button>)}</nav><div className="sideFoot"><div className="avatar">T</div><div><strong>Operação B2B</strong><small>Ambiente de trabalho</small></div></div></aside><main className="content"><header className="topbar"><div>Prospecção <span>/</span> {labels[tab]}</div><button className="textButton" onClick={()=>act(async()=>{await db?.auth.signOut();})}>Sair ↗</button></header><div className="pageBody">{notices}{data.limited&&<div className="notice">Exibindo até 500 prospects e 200 campanhas recentes. Totais referentes a este recorte.</div>}<div className="pageHeading"><div><p className="eyebrow">{new Date().toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long'})}</p><h1>{tab==='today'?'O que vamos prospectar hoje?':labels[tab]}</h1><p className="muted">{tab==='today'?'Seu próximo cliente começa com uma boa pesquisa.':tab==='pipeline'?'Organize o trabalho e registre o próximo passo de cada conta.':'Empresas, contexto e decisões em um só lugar.'}</p></div>{tab!=='settings'&&<button className="primary" onClick={()=>open('campaign')}>＋ Nova campanha</button>}</div>
+  {tab==='today'&&<><section className="heroCard"><div><span className="pill blue">DA PESQUISA À CONVERSA</span><h2>Escolha um alvo.<br/>Construa novas conexões.</h2><p>Defina o segmento e a região. Importe empresas ou acompanhe uma aquisição autorizada.</p><button className="primary" onClick={()=>open('campaign')}>Criar minha campanha ↗</button></div><div className="heroArt" aria-hidden="true"><div className="orbit o1"/><div className="orbit o2"/><div className="orbit o3"/><span className="orbitDot d1"/><span className="orbitDot d2"/><div className="targetCard"><span>◎</span><strong>Um novo<br/>ponto de partida.</strong><small>FOCO · CONTEXTO · AÇÃO</small></div></div></section><section className="stats">{[['Empresas na base',data.prospects.length,'Contas identificadas'],['Aguardando revisão',data.prospects.filter(p=>p.qualification==='REVISÃO MANUAL').length,'Evidências para conferir'],['Contas qualificadas',data.prospects.filter(p=>p.qualification==='QUALIFICADO').length,'Decisão humana registrada'],['Ações vencidas',data.prospects.filter(p=>p.due_at&&new Date(p.due_at)<new Date()&&p.stage!=='SUPRIMIDO').length,'Acompanhamento pendente']].map(([label,value,sub],i)=><article key={label}><span>{label}</span><strong>{value}<span className={`statIcon s${i}`}>{['◎','◷','✓','↗'][i]}</span></strong><small>{sub}</small></article>)}</section></>}
+  {(tab==='today'||tab==='prospects')&&<section className="panel"><div className="panelHead"><div><h2>Contas para trabalhar <span className="count">{prospects.length}</span></h2><p className="muted">Prioridade ordinal aguarda as regras canônicas AF1–AF3.</p></div><button className="secondary" onClick={()=>open('import')}>↓ Importar empresas</button></div><div className="filters"><input aria-label="Buscar empresas" placeholder="⌕ Buscar empresa, cidade ou setor" value={search} onChange={e=>setSearch(e.target.value)}/><select aria-label="Filtrar campanha" value={campaignId} onChange={e=>setCampaignId(e.target.value)}><option value="">Todas as campanhas</option>{data.campaigns.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select><select aria-label="Filtrar qualificação" value={filter} onChange={e=>setFilter(e.target.value)}>{['Todas','REVISÃO MANUAL','QUALIFICADO','NÃO QUALIFICADO'].map(q=><option key={q}>{q}</option>)}</select></div><div className="tableWrap"><table><thead><tr><th>EMPRESA</th><th>ORIGEM</th><th>QUALIFICAÇÃO</th><th>PRÓXIMO PASSO</th><th/></tr></thead><tbody>{prospects.map(p=><tr key={p.id}><td><div className="companyCell"><span className="companyAvatar">{p.name.slice(0,2).toUpperCase()}</span><div><strong>{p.name}</strong><small>{p.city||'Local não informado'} · {p.sector||'Setor em revisão'}</small></div></div></td><td><span className="sourceBadge">{p.source==='google_maps'?'Google Maps':'Importação'}</span></td><td><span className={`badge ${p.qualification==='QUALIFICADO'?'green':p.qualification==='NÃO QUALIFICADO'?'gray':'amber'}`}>{p.qualification==='REVISÃO MANUAL'?'Revisar evidências':p.qualification==='QUALIFICADO'?'Qualificado':'Não qualificado'}</span></td><td className="muted">{p.next_action||stages[p.stage]}</td><td><button className="rowButton" onClick={()=>view(p)}>Abrir ↗</button></td></tr>)}</tbody></table></div>{!prospects.length&&<div className="empty"><span>◎</span><h3>{search||filter!=='Todas'?'Nenhuma empresa com estes filtros':'Sua próxima oportunidade começa aqui'}</h3><p>Crie uma campanha e importe o primeiro lote de empresas.</p><button className="secondary" onClick={()=>setTab('campaigns')}>Ver campanhas →</button></div>}<div className="panelFooter">{prospects.length} contas · Dados ausentes permanecem desconhecidos<button className="textButton" disabled={busy} onClick={()=>act(refresh)}>Atualizar ↻</button></div></section>}
+  {tab==='campaigns'&&<><section className="campaignGrid">{data.campaigns.map(c=><article className="panel campaignCard" key={c.id}><span className="pill blue">PJ · B2B</span><h2>{c.name}</h2><p>{c.target}</p><p className="muted">⌖ {c.location}</p><p className="muted">{c.objective||'Objetivo ainda não detalhado.'}</p><div className="campaignNumbers"><strong>{data.prospects.filter(p=>p.campaign_ids.includes(c.id)).length}</strong> empresas vinculadas</div><div className="actionRow"><button className="secondary" onClick={()=>{setCampaignId(c.id);setTab('prospects');}}>Ver empresas</button><button className="primary" onClick={()=>{setCampaignId(c.id);open('import');}}>Importar</button></div><button className="textButton" disabled={busy||!data.maps_ready} onClick={()=>act(async()=>{await api('acquisition',{campaign_id:c.id,run_id:crypto.randomUUID()});await refresh();setMessage('Aquisição iniciada. Consulte o lote para acompanhar e importar.');})}>◎ {data.maps_ready?'Buscar no Maps · até 50 empresas':'Maps aguardando configuração'}</button></article>)}</section>{!data.campaigns.length&&<div className="panel empty"><span>◎</span><h3>Um alvo claro faz a diferença.</h3><p>Comece definindo segmento, região e objetivo.</p><button className="primary" onClick={()=>open('campaign')}>Criar primeira campanha</button></div>}<section className="panel"><div className="panelHead"><h2>Histórico de lotes</h2><span className="muted">Últimos 100</span></div>{data.runs.map(r=><div className="runRow" key={r.id}><div><strong>{data.campaigns.find(c=>c.id===r.campaign_id)?.name||'Campanha'}</strong><small>{r.source} · {new Date(r.created_at).toLocaleString('pt-BR')}</small>{r.error&&<small className="danger">{r.error}</small>}</div><span className="badge gray">{r.status}</span><small>{r.item_count} linhas · {r.invalid_count} em quarentena · {r.duplicate_count} duplicadas</small>{r.apify_run_id&&r.status!=='IMPORTED'&&<button className="secondary" disabled={busy} onClick={()=>act(async()=>{await api('acquisition',{action:'sync',run_id:r.id});await refresh();})}>Consultar</button>}</div>)}{!data.runs.length&&<p className="emptyText">Nenhum lote recebido ainda.</p>}</section></>}
+  {tab==='pipeline'&&<><div className="notice">Fila pré-oportunidade. Uma resposta ou reunião, por si só, não cria uma oportunidade comercial.</div><div className="kanban">{(Object.entries(stages) as [Stage,string][]).map(([stage,label])=><section className="kanbanColumn" key={stage}><h3><span className={`stageDot ${stage}`}/>{label}<span>{data.prospects.filter(p=>p.stage===stage).length}</span></h3>{data.prospects.filter(p=>p.stage===stage).map(p=><button key={p.id} className="kanbanCard" onClick={()=>view(p)}><strong>{p.name}</strong><small>{p.city||'Local desconhecido'}</small><p>{p.next_action||'Próximo passo a definir'}</p>{p.due_at&&<span className="due">◷ {new Date(p.due_at).toLocaleDateString('pt-BR')}</span>}</button>)}</section>)}</div></>}
+  {tab==='settings'&&<section className="panel settings"><h2>Conexões e regras</h2>{[['Supabase','Conectado','Persistência, acesso autorizado e histórico de decisões.'],['Google Maps / Apify',data.maps_ready?'Configurado':'Pendente','Até 50 empresas por aquisição autorizada.'],['LinkedIn','Desabilitado','Aguarda aprovação da fonte. Sem sessão, cookie ou mensagem automatizada.'],['Qualificação e prioridade','Revisão humana','Qualificação com justificativa e evidência. AF1–AF3 aguardam os níveis e predicados do módulo canônico 05.'],['CNPJ / CNAE e taxonomia','Não verificados','Informações importadas são preservadas. Categoria da fonte é sugestão de atividade.']].map(([title,status,desc])=><div key={title}><strong>{title}</strong><span className="badge gray">{status}</span><p>{desc}</p></div>)}</section>}
+  <footer className="footer">THEMA ASSINATURAS <span>Prospecção com contexto. Decisões com evidências.</span></footer></div></main>
+  {modal&&<div className="modalBackdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="close" disabled={busy} onClick={()=>setModal(null)} aria-label="Fechar">×</button><p className="eyebrow">{modal==='campaign'?'NOVO PONTO DE PARTIDA':'ENTRADA DE EMPRESAS'}</p><h2 id="modal-title">{modal==='campaign'?'Criar campanha':'Importar um lote'}</h2>{notices}{modal==='campaign'?<form onSubmit={e=>{e.preventDefault();const f=Object.fromEntries(new FormData(e.currentTarget));act(async()=>{const created=await api('campaigns',{...f,id:requestKey.current});await refresh();setCampaignId(created.id);setModal(null);setTab('campaigns');setMessage('Campanha criada. Agora importe o primeiro lote.');});}}><label>Nome da campanha<input name="name" required maxLength={120} placeholder="Serviços empresariais · Joinville"/></label><div className="formGrid"><label>Segmento ou atividade<input name="target" required maxLength={200} placeholder="Manutenção industrial"/></label><label>Cidade / região<input name="location" required maxLength={160} placeholder="Joinville, SC, Brasil"/></label></div><label>O que queremos descobrir?<textarea name="objective" maxLength={1000} placeholder="Entender a mobilidade das equipes externas."/></label><div className="notice">A atividade orienta a descoberta; a qualificação depende de evidências sobre cada empresa.</div><button className="primary full" disabled={busy}>{busy?'Salvando…':'Criar campanha →'}</button></form>:<form onSubmit={e=>{e.preventDefault();const f=new FormData(e.currentTarget);act(async()=>{let records;try{records=JSON.parse(importText);}catch{throw new Error('O JSON não é válido. Confira vírgulas e colchetes.');}const res=await api('import',{campaign_id:f.get('campaign_id'),source:f.get('source'),records,batch_id:requestKey.current});await refresh();setModal(null);setTab('prospects');setMessage(`${res.item_count} linhas recebidas; ${res.duplicate_count} duplicadas; ${res.invalid_count} em quarentena.`);});}} onChange={()=>{requestKey.current=crypto.randomUUID();}}><label>Campanha<select required name="campaign_id" value={campaignId} onChange={e=>setCampaignId(e.target.value)}><option value="">Selecione</option>{data.campaigns.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></label><label>Origem<select name="source"><option value="manual">Importação manual</option><option value="google_maps">Dataset Google Maps</option></select></label><label>Arquivo JSON · até 100 empresas / 1 MB<input type="file" accept="application/json,.json" onChange={e=>{const file=e.target.files?.[0];if(file)act(async()=>{if(file.size>1_000_000)throw new Error('Arquivo maior que 1 MB.');setImportText(await file.text());});}}/></label><label>Ou cole o JSON<textarea className="codeInput" required value={importText} onChange={e=>setImportText(e.target.value)} placeholder={example}/></label><small className="muted">Exemplo fictício. Nome obrigatório; placeId/source_id permite deduplicar na fonte. Linhas inválidas são preservadas em quarentena.</small><button className="primary full" disabled={busy||!data.campaigns.length}>{busy?'Processando…':'Importar e revisar →'}</button></form>}</section></div>}
+  {selected&&<div className="modalBackdrop drawerBackdrop"><section className="drawer" role="dialog" aria-modal="true" aria-labelledby="prospect-title"><button className="close" disabled={busy} onClick={()=>setSelected(null)} aria-label="Fechar ficha">×</button><p className="eyebrow">FICHA DA EMPRESA</p><h2 id="prospect-title">{selected.name}</h2><p className="muted">{selected.city||'Local não informado'} · {selected.sector||'Setor em revisão'}</p>{notices}<div className="detailGrid">{[['QUALIFICAÇÃO',selected.qualification],['PRIORIDADE ORDINAL','Aguarda regras AF1–AF3'],['CNPJ / CNAE · NÃO VERIFICADOS',`${selected.cnpj||'Não informado'} / ${selected.cnae||'Não informado'}`],['TELEFONE DA FONTE',selected.phone||'Não informado']].map(([label,value])=><div key={label}><small>{label}</small><strong>{value}</strong></div>)}</div><div className="linkRow">{webUrl(selected.website)&&<a target="_blank" rel="noreferrer" href={webUrl(selected.website)!}>Website ↗</a>}{webUrl(selected.source_url)&&<a target="_blank" rel="noreferrer" href={webUrl(selected.source_url)!}>Fonte original ↗</a>}</div><form onSubmit={e=>{e.preventDefault();const f=Object.fromEntries(new FormData(e.currentTarget));if(f.due_at)f.due_at=new Date(String(f.due_at)).toISOString();act(async()=>{await api('prospects',{...f,id:selected.id,version:selected.version,event_id:requestKey.current});await refresh();setSelected(null);setMessage('Decisão registrada no histórico.');});}} onChange={()=>{requestKey.current=crypto.randomUUID();}}><h3>Registrar próximo passo</h3><label>Tipo de registro<select name="kind" value={kind} onChange={e=>setKind(e.target.value)}><option value="note">Anotação / evidência</option><option value="review">Revisão de qualificação</option><option value="stage">Atualizar acompanhamento</option></select></label><label>Justificativa / o que aconteceu<textarea name="reason" required maxLength={2000} placeholder="Registre o fato, a fonte e a decisão."/></label>{kind==='review'&&<><label>Decisão<select name="qualification" defaultValue={selected.qualification}><option>REVISÃO MANUAL</option><option>QUALIFICADO</option><option>NÃO QUALIFICADO</option></select></label><label>Referência da evidência<input name="evidence_url" type="url" required placeholder="https://…"/></label><p className="muted">A decisão da conta não autoriza contato ou envio automaticamente.</p></>}{kind==='stage'&&<><label>Etapa<select name="stage" defaultValue={selected.stage}>{Object.entries(stages).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label><label>Próxima ação<input name="next_action" maxLength={500} defaultValue={selected.next_action||''}/></label><label>Prazo local<input name="due_at" type="datetime-local"/></label><p className="muted">Suprimir cancela a próxima ação. Reativação exige revisão administrativa.</p></>}<button className="primary full" disabled={busy}>{busy?'Salvando…':'Salvar no histórico'}</button></form><h3>Histórico de decisões</h3>{history.events.map(event=><article className="event" key={event.id}><small>{new Date(event.created_at).toLocaleString('pt-BR')} · {event.kind}</small><p>{String(event.detail.reason||'')}</p></article>)}{!history.events.length&&<p className="muted">Nenhuma decisão registrada.</p>}<details><summary>Proveniência · últimas 10 observações brutas</summary><pre>{JSON.stringify(history.raw,null,2)}</pre></details></section></div>}
+  </div>;
 }
